@@ -7,8 +7,8 @@ import {
   array,
   Document,
   Filter,
-  ship,
   limit,
+  removeRelation,
   replace,
   boolean,
   string,
@@ -73,15 +73,15 @@ const todoPure = {
   tag: string(),
 };
 
-const userTodosRelations = {
+const TodosRelations = {
   user: {
-    optional: true,
+    optional: false,
     schemaName: "user",
     type: "single" as RelationDataType,
     relatedRelations: {
       todos: {
         type: "multiple" as RelationDataType,
-        limit: 5,
+        limit: 10,
         sort: {
           field: "_id",
           order: "desc" as RelationSortOrderType,
@@ -92,7 +92,12 @@ const userTodosRelations = {
   categories: {
     optional: false,
     schemaName: "category",
-    type: "single" as RelationDataType,
+    type: "multiple" as RelationDataType,
+    limit: 10,
+    sort: {
+      field: "_id",
+      order: "desc" as RelationSortOrderType,
+    },
     relatedRelations: {
       todos: {
         type: "multiple" as RelationDataType,
@@ -106,9 +111,9 @@ const userTodosRelations = {
   },
 };
 
-const todos = coreApp.odm.newModel("todos", todoPure, userTodosRelations);
+const todos = coreApp.odm.newModel("todos", todoPure, TodosRelations);
 
-//_________________ USE IN FRONT-END -- USER VALIDATOR __________________ //
+//_________________ USE IN FRONT-END -- ADD USER VALIDATOR __________________ //
 
 const addUserValidator = () => {
   return object({
@@ -137,14 +142,14 @@ coreApp.acts.setAct({
   fn: addUser, // give a async function
 });
 
-//_________________________ TODO VALIDATOR ______________________ //
+//_________________________ ADD TODO VALIDATOR ______________________ //
 
 const addTodosValidator = () => {
   return object({
     set: object({
       ...todoPure,
       userId: objectIdValidation,
-      categoryId: objectIdValidation,
+      categoryId: array(objectIdValidation),
     }),
     get: coreApp.schemas.selectStruct("todos", 1),
   });
@@ -155,6 +160,7 @@ const addTodosValidator = () => {
 const addTodo: ActFn = async (body) => {
   const { title, description, categoryId, tag, done, userId } =
     body.details.set;
+  const obIdCategory = categoryId.map((lc: string) => new ObjectId(lc));
   return await todos.insertOne({
     doc: { title, description, done, tag },
     relations: {
@@ -165,7 +171,7 @@ const addTodo: ActFn = async (body) => {
         },
       },
       categories: {
-        _ids: new ObjectId(categoryId),
+        _ids: obIdCategory,
         relatedRelations: {
           todos: true,
         },
@@ -185,6 +191,7 @@ coreApp.acts.setAct({
 });
 
 // ____________________ UPDATE CATEGORY TODO VALIDATOR _________________ //
+// FOR REPLACE GROUP CATEGORY
 
 const updateCategoryTodoValidator = () => {
   return object({
@@ -195,8 +202,6 @@ const updateCategoryTodoValidator = () => {
     get: coreApp.schemas.selectStruct("todos", 1),
   });
 };
-
-// _______________________ UPDATE VATEGORY FN ________________________ //
 
 const updateCategoryTodo: ActFn = async (body) => {
   const { title, description, _id, tag, done, categoryId } = body.details.set;
@@ -215,8 +220,6 @@ const updateCategoryTodo: ActFn = async (body) => {
   });
 };
 
-// _______________________ SET UPDATE CATEGORY FN ____________________ //
-
 coreApp.acts.setAct({
   schema: "todos",
   actName: "updateCategoryTodo",
@@ -224,48 +227,40 @@ coreApp.acts.setAct({
   fn: updateCategoryTodo,
 });
 
-//=================================================================================== not working - becuase relation is one to many
-// ____________________ REMOVE TODO USER VALIDATOR _________________ //
-
-const removeUsertodoValidator = () => {
+//_________________________________________________ REMOVE TODO OF CATEGORIES - THATS ACT FALSE BECUASE IT'S NOT LOGICAL
+// JUST FOR TEST REMOVERELATION
+const delTodoOfCategoriesValidator = () => {
   return object({
     set: object({
       _id: objectIdValidation,
-      userId: objectIdValidation,
+      categoryId: array(objectIdValidation),
     }),
     get: coreApp.schemas.selectStruct("todos", 1),
   });
 };
 
-// _______________________ REMOVE CATEGORY FN ________________________ //
-
-const removeUserTodo: ActFn = async (body) => {
-  const { _id, userId } = body.details.set;
-  return await todos.addRelation({
+const deleteTodoOfCategories: ActFn = async (body) => {
+  const { categoryId, _id } = body.details.set;
+  const obIdCategory = categoryId.map((lc: string) => new ObjectId(lc));
+  return await todos.removeRelation({
     filters: { _id: new ObjectId(_id) },
     projection: body.details.get,
     relations: {
-      user: {
-        _ids: new ObjectId(userId),
-
+      categories: {
+        _ids: obIdCategory,
         relatedRelations: {
           todos: true,
         },
       },
     },
-    replace: true,
   });
 };
-
-// _______________________ SET REMOVE CATEGORY FN ____________________ //
-
 coreApp.acts.setAct({
-  schema: "user",
-  actName: "removeUserTodo",
-  validator: removeUsertodoValidator(),
-  fn: removeUserTodo,
+  schema: "todos",
+  actName: "deleteTodoOfCategories",
+  validator: delTodoOfCategoriesValidator(),
+  fn: deleteTodoOfCategories,
 });
-//==========================================================================================================================
 
 //______________________________ GET USER  _____________________________ //
 const getUsersValidator = () => {
@@ -317,12 +312,14 @@ const getAllTodos: ActFn = async (body) => {
     .limit(limit)
     .toArray();
 };
+
 coreApp.acts.setAct({
   schema: "todos",
   actName: "getAllTodos",
   validator: getAllTodosValidator(),
   fn: getAllTodos,
 });
+
 //______________________________ GET TODO BY TAG  _____________________________ //
 const getTodoValidator = () => {
   return object({
