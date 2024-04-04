@@ -4,9 +4,11 @@ import {
   enums,
   number,
   lesan,
+  defaulted,
   array,
   Document,
   Filter,
+  ship,
   limit,
   removeRelation,
   replace,
@@ -35,6 +37,7 @@ const userPure = {
   fullName: string(),
   email: string(),
   password: string(),
+  level: enums(["Admin", "Normal"]),
 };
 
 const userRelations = {};
@@ -53,16 +56,6 @@ const category = coreApp.odm.newModel(
   categoryPure,
   categoryRelations
 );
-
-//______________________ TAG MODEL _________________//
-
-const tagPure = {
-  name: string(),
-};
-
-const tagRelations = {};
-
-const tag = coreApp.odm.newModel("tag", tagPure, tagRelations);
 
 //_____________________ TODO MODEL ___________________ //
 
@@ -113,11 +106,70 @@ const TodosRelations = {
 
 const todos = coreApp.odm.newModel("todos", todoPure, TodosRelations);
 
+// Auth Section //
+const setUser = async () => {
+  const context = coreApp.contextFns.getContextModel();
+
+  const userId = context.Headers.get("userId");
+
+  if (!userId) {
+    throw new Error("you can not do this Act!");
+  }
+
+  const foundedUser = await user.findOne({
+    filters: { _id: new ObjectId(userId) },
+  });
+
+  if (!foundedUser) {
+    throw new Error("Can not find this user!");
+  }
+
+  coreApp.contextFns.setContext({ User: foundedUser });
+};
+// any user can not add set admin level when loged in todos
+const checkLevel = async () => {
+  const context = coreApp.contextFns.getContextModel();
+
+  if (!context.User) {
+    throwError("You most be loged in");
+  }
+
+  if (context.User.level === "Admin") {
+    return;
+  }
+
+  coreApp.contextFns.addBodyToContext({
+    // this addBodyToContext is for create any details in body
+    ...context.body!, //bangsign - that's mean has been before
+    details: {
+      //most add details
+      ...context.body!.details,
+      set: {
+        ...context.body!.details.set,
+        level: "Normal",
+      },
+    },
+  });
+};
+
+const justAdmin = async () => {
+  const context = coreApp.contextFns.getContextModel();
+
+  if (context.User.level !== "Admin") {
+    throw new Error("Just Admin can do this Act");
+  }
+};
+
 //_________________ USE IN FRONT-END -- ADD USER VALIDATOR __________________ //
 
 const addUserValidator = () => {
   return object({
-    set: object(userPure),
+    set: object({
+      fullName: string(),
+      email: string(),
+      password: string(),
+      level: defaulted(enums(["Admin", "Normal"]), "Normal"),
+    }),
     get: coreApp.schemas.selectStruct("user", 1),
   });
 };
@@ -126,9 +178,9 @@ const addUserValidator = () => {
 // FN Section - user validator
 
 const addUser: ActFn = async (body) => {
-  const { fullName, email, password } = body.details.set;
+  const { fullName, email, password, level } = body.details.set;
   return await user.insertOne({
-    doc: { fullName, email, password },
+    doc: { fullName, email, password, level },
     projection: body.details.get,
   });
 };
@@ -140,6 +192,8 @@ coreApp.acts.setAct({
   actName: "addUser",
   validator: addUserValidator(), // return a object struct
   fn: addUser, // give a async function
+  preValidation: [setUser, checkLevel],
+  validationRunType: "create",
 });
 
 //_________________________ ADD TODO VALIDATOR ______________________ //
@@ -287,29 +341,62 @@ coreApp.acts.setAct({
   fn: getUsers,
 });
 
+//______________________________ DELETE USER  _____________________________ //
+const deleteUserValidator = () => {
+  return object({
+    set: object({
+      _id: objectIdValidation,
+    }),
+    get: object({
+      success: optional(enums([0, 1])),
+    }),
+  });
+};
+
+const deleteUser: ActFn = async (body) => {
+  const {
+    set: { _id },
+    get,
+  } = body.details;
+
+  return await todos.deleteOne({
+    filters: { _id: new ObjectId(_id) },
+  });
+};
+coreApp.acts.setAct({
+  schema: "user",
+  actName: "deleteUser",
+  validator: deleteUserValidator(),
+  fn: deleteUser,
+  preAct: [setUser, justAdmin],
+});
+
 //______________________________ GET TODOS WITH PAGENATION _____________________________ //
 const getAllTodosValidator = () => {
   return object({
     set: object({
       page: number(),
-      limit: number(),
+      take: number(),
     }),
     get: coreApp.schemas.selectStruct("todos", 1),
   });
 };
 const getAllTodos: ActFn = async (body) => {
   let {
-    set: { page, limit },
+    set: { page, take },
     get,
   } = body.details;
 
   page = page || 1;
-  limit = limit || 50;
-  const skip = limit * (page - 1);
+  take = take || 50;
+  const skip = take * (page - 1);
+
   return await todos
-    .find({ projection: get, filters: {} })
+    .find({
+      projection: get,
+    })
     .skip(skip)
-    .limit(limit)
+    .limit(take)
     .toArray();
 };
 
@@ -342,6 +429,74 @@ coreApp.acts.setAct({
   actName: "getTodo",
   validator: getTodoValidator(),
   fn: getTodo,
+});
+
+//______________________________ UPDATE TODO  _____________________________ //
+const updateTodoValidator = () => {
+  return object({
+    set: object({
+      _id: objectIdValidation,
+      title: optional(string()),
+      description: optional(string()),
+      done: optional(boolean()),
+      tag: optional(string()),
+    }),
+    get: coreApp.schemas.selectStruct("todos", 1),
+  });
+};
+
+const updateTodo: ActFn = async (body) => {
+  const {
+    set: { _id, tag, title, description, done },
+    get,
+  } = body.details;
+
+  const updateObj: Document = {};
+  title && (updateObj.title = title);
+  description && (updateObj.description = description);
+  tag && (updateObj.tag = tag);
+  done && (updateObj.done = done);
+
+  return await todos.findOneAndUpdate({
+    filters: { _id: new ObjectId(_id) },
+    update: { $set: updateObj },
+    projection: get,
+  });
+};
+coreApp.acts.setAct({
+  schema: "todos",
+  actName: "updateTodo",
+  validator: updateTodoValidator(),
+  fn: updateTodo,
+});
+
+//______________________________ DELETE TODO  _____________________________ //
+const deleteTodoValidator = () => {
+  return object({
+    set: object({
+      _id: objectIdValidation,
+    }),
+    get: object({
+      success: optional(enums([0, 1])),
+    }),
+  });
+};
+
+const deleteTodo: ActFn = async (body) => {
+  const {
+    set: { _id },
+    get,
+  } = body.details;
+
+  return await todos.deleteOne({
+    filters: { _id: new ObjectId(_id) },
+  });
+};
+coreApp.acts.setAct({
+  schema: "todos",
+  actName: "deleteTodo",
+  validator: deleteTodoValidator(),
+  fn: deleteTodo,
 });
 
 //__________________________ CATEGORY VALIDATOR ___________________//
